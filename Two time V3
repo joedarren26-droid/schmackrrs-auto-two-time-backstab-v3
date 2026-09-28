@@ -1,0 +1,207 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local lp = Players.LocalPlayer
+
+local START_DELAY = 0.007
+local DURATION = 1.35
+local BEHIND = 3.45          -- further back so it stays pure back and less side clipping
+local running = false
+local hooked = {}
+local connections = {}
+
+local killerNames = {
+    "azurewrath", "Azurewrath", "AzureWrath",
+    "Jason", "c00lkidd", "JohnDoe", "1x1x1x1", "Noli", "Slasher",
+    "Nosferatu", "Azure", "coolkid", "coolkidd",
+    "sixer", "Sixer",
+    "666", "guest666", "Guest666",
+    "Doombringer", "Zombie king"
+}
+
+local function isKiller(name)
+    name = string.lower(tostring(name or ""))
+    for _, k in ipairs(killerNames) do
+        if name == string.lower(k) then return true end
+    end
+    return false
+end
+
+local function getRoot()
+    local char = lp.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getNearestKiller()
+    local myRoot = getRoot()
+    if not myRoot then return nil end
+
+    local nearest, shortest = nil, math.huge
+
+    local function check(model)
+        if not model or not isKiller(model.Name) then return end
+        local root = model:FindFirstChild("HumanoidRootPart")
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if root and hum and hum.Health > 0 then
+            local d = (myRoot.Position - root.Position).Magnitude
+            if d < shortest then
+                shortest = d
+                nearest = model
+            end
+        end
+    end
+
+    local killersFolder = workspace:FindFirstChild("Players")
+    killersFolder = killersFolder and killersFolder:FindFirstChild("Killers")
+    if killersFolder then
+        for _, k in ipairs(killersFolder:GetChildren()) do
+            check(k)
+            for _, d in ipairs(k:GetDescendants()) do
+                if d:IsA("Model") then check(d) end
+            end
+        end
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= lp and plr.Character then
+            check(plr.Character)
+        end
+    end
+
+    return nearest
+end
+
+local function cleanup()
+    for _, conn in ipairs(connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(connections)
+    running = false
+end
+
+local function runPlaceSequence()
+    if running then return end
+    running = true
+
+    local character = lp.Character
+    if not character then
+        cleanup()
+        return
+    end
+
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        cleanup()
+        return
+    end
+
+    task.wait(START_DELAY)
+    if not character.Parent then
+        cleanup()
+        return
+    end
+
+    local killer = getNearestKiller()
+    if not killer then
+        cleanup()
+        return
+    end
+
+    local place = Instance.new("Part")
+    place.Name = "place"
+    place.Size = Vector3.new(5.5, 5.5, 5.5)
+    place.Transparency = 1
+    place.CanCollide = false
+    place.Anchored = true
+    place.Massless = true
+    place.Parent = character
+
+    local originalPrimary = character.PrimaryPart
+    character.PrimaryPart = place
+
+    local startTime = os.clock()
+
+    local function forceStick()
+        if not character.Parent or not place.Parent or os.clock() - startTime > DURATION then
+            cleanup()
+
+            if place and place.Parent then
+                place:Destroy()
+            end
+
+            if character and character.Parent then
+                local root = character:FindFirstChild("HumanoidRootPart")
+                if root then
+                    character.PrimaryPart = root
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                elseif originalPrimary and originalPrimary.Parent then
+                    character.PrimaryPart = originalPrimary
+                end
+            end
+            return
+        end
+
+        local killerHrp = killer and killer:FindFirstChild("HumanoidRootPart")
+        local hum = killer and killer:FindFirstChildOfClass("Humanoid")
+
+        if killerHrp and hum and hum.Health > 0 then
+            -- Strictly behind the killer (pure back)
+            place.CFrame = killerHrp.CFrame * CFrame.new(0, 0, BEHIND)
+
+            -- Strong velocity kill so spinning/running doesn’t drag it
+            place.AssemblyLinearVelocity = Vector3.zero
+            place.AssemblyAngularVelocity = Vector3.zero
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        else
+            killer = getNearestKiller()
+        end
+    end
+
+    table.insert(connections, RunService.PreRender:Connect(forceStick))
+    table.insert(connections, RunService.Heartbeat:Connect(forceStick))
+    table.insert(connections, RunService.Stepped:Connect(forceStick))
+    table.insert(connections, RunService.RenderStepped:Connect(forceStick))
+end
+
+local function isDaggerButton(name)
+    name = string.lower(tostring(name or ""))
+    return name:find("dagger") or name:find("backstab") or name == "stab"
+end
+
+local function hook(btn)
+    if not btn or hooked[btn] then return end
+    if not (btn:IsA("GuiButton") or btn:IsA("TextButton") or btn:IsA("ImageButton")) then return end
+    if not isDaggerButton(btn.Name) then return end
+
+    hooked[btn] = true
+    pcall(function() btn.Activated:Connect(runPlaceSequence) end)
+    pcall(function() btn.MouseButton1Click:Connect(runPlaceSequence) end)
+    pcall(function() btn.TouchTap:Connect(runPlaceSequence) end)
+end
+
+local function scanButtons()
+    local pg = lp:FindFirstChild("PlayerGui")
+    if not pg then return end
+    for _, obj in ipairs(pg:GetDescendants()) do
+        hook(obj)
+    end
+end
+
+task.spawn(function()
+    while true do
+        scanButtons()
+        task.wait(0.4)
+    end
+end)
+
+lp.CharacterAdded:Connect(function()
+    table.clear(hooked)
+    cleanup()
+    task.wait(0.85)
+    scanButtons()
+end)
+
+lp.CharacterRemoving:Connect(cleanup)
+
+scanButtons()
